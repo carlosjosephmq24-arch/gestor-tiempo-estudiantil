@@ -1,49 +1,180 @@
 import streamlit as st
-import pandas as pd
-from datetime import datetime
+import sqlite3
+from datetime import date
 
-st.set_page_config(page_title="Gestor de Tiempo Estudiantil", layout="wide")
+st.set_page_config(page_title="Gestor Estudiantil", layout="wide")
 
-st.title("🚀 Planificador y Seguimiento de Actividades")
-st.markdown("Optimiza tu ritmo de estudio y organiza tus entregas.")
-if 'tareas' not in st.session_state:
-    st.session_state.tareas = pd.DataFrame(columns=["Actividad", "Materia", "Fecha Límite", "Estado"])
+# =========================
+# BASE DE DATOS SQLITE
+# =========================
+conn = sqlite3.connect("app.db", check_same_thread=False)
+cursor = conn.cursor()
 
-st.sidebar.header("Nueva Actividad")
-with st.sidebar.form("formulario_tareas"):
-    nombre = st.text_input("Nombre de la tarea:")
-    materia = st.selectbox("Materia:", ["Programación", "Marketing", "Diseño", "Matemáticas", "Otro"])
-    fecha = st.date_input("Fecha de entrega:", datetime.now())
-    boton_agregar = st.form_submit_button("Añadir Tarea")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS tareas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario TEXT,
+    actividad TEXT,
+    materia TEXT,
+    prioridad TEXT,
+    fecha TEXT
+)
+""")
 
-    if boton_agregar and nombre:
-        nueva_fila = pd.DataFrame({"Actividad": [nombre], "Materia": [materia], 
-                                    "Fecha Límite": [fecha], "Estado": ["Pendiente"]})
-        st.session_state.tareas = pd.concat([st.session_state.tareas, nueva_fila], ignore_index=True)
-        st.success("Tarea guardada.")
-col1, col2 = st.columns([2, 1])
+conn.commit()
 
-with col1:
-    st.subheader("📋 Lista de Pendientes")
-    if not st.session_state.tareas.empty:
+# =========================
+# SESIÓN
+# =========================
+if "user" not in st.session_state:
+    st.session_state.user = None
 
-        st.dataframe(st.session_state.tareas, use_container_width=True)
-        
-        if st.button("Marcar última como 'Completada'"):
-            st.session_state.tareas.iloc[-1, 3] = "✅ Completado"
+# =========================
+# FUNCIONES BASE DE DATOS
+# =========================
+def guardar_tarea(usuario, actividad, materia, prioridad, fecha):
+    cursor.execute("""
+        INSERT INTO tareas (usuario, actividad, materia, prioridad, fecha)
+        VALUES (?, ?, ?, ?, ?)
+    """, (usuario, actividad, materia, prioridad, str(fecha)))
+    conn.commit()
+
+
+def cargar_tareas(usuario):
+    cursor.execute("""
+        SELECT id, actividad, materia, prioridad, fecha
+        FROM tareas
+        WHERE usuario=?
+    """, (usuario,))
+    return cursor.fetchall()
+
+
+def eliminar_tarea(tarea_id):
+    cursor.execute("DELETE FROM tareas WHERE id=?", (tarea_id,))
+    conn.commit()
+
+# =========================
+# LOGIN
+# =========================
+if st.session_state.user is None:
+
+    st.title("🔐 Login")
+
+    user = st.text_input("Usuario", key="login_user")
+
+    if st.button("Entrar", key="login_btn"):
+
+        if user.strip() == "":
+            st.warning("Escribe un usuario")
+        else:
+            st.session_state.user = user.strip()
             st.rerun()
+
+# =========================
+# APP PRINCIPAL
+# =========================
+else:
+
+    st.title(f"📚 Bienvenido {st.session_state.user}")
+
+    # =========================
+    # CREAR TAREA
+    # =========================
+    st.sidebar.header("Nueva tarea")
+
+    actividad = st.sidebar.text_input("Actividad", key="actividad_input")
+
+    materia = st.sidebar.selectbox(
+        "Materia",
+        ["Programación", "Matemáticas", "Marketing", "Diseño", "Otro"],
+        key="materia_select"
+    )
+
+    prioridad = st.sidebar.selectbox(
+        "Prioridad",
+        ["🟥 Alta", "🟡 Media", "🟢 Baja"],
+        key="prioridad_select"
+    )
+
+    fecha = st.sidebar.date_input("Fecha límite", date.today(), key="fecha_input")
+
+    if st.sidebar.button("Guardar tarea", key="guardar_btn"):
+
+        if actividad.strip() == "":
+            st.warning("Escribe una actividad")
+        else:
+            guardar_tarea(
+                st.session_state.user,
+                actividad,
+                materia,
+                prioridad,
+                fecha
+            )
+            st.success("Tarea guardada")
+            st.rerun()
+
+    # =========================
+    # MOSTRAR TAREAS
+    # =========================
+    st.subheader("📋 Tus tareas")
+
+    tareas = cargar_tareas(st.session_state.user)
+
+    if not tareas:
+        st.info("No tienes tareas aún")
+
     else:
-        st.info("No hay actividades registradas aún.")
+        for t in tareas:
 
-with col2:
-    st.subheader("💡 Tips de Productividad")
-    with st.expander("Técnica Pomodoro"):
-        st.write("Estudia 25 minutos sin distracciones y descansa 5 minutos.")
-    with st.expander("Matriz de Eisenhower"):
-        st.write("Prioriza lo importante y urgente sobre lo que puede esperar.")
+            st.write(f"""
+            **📝 {t[1]}**
+            - Materia: {t[2]}
+            - Prioridad: {t[3]}
+            - Fecha: {t[4]}
+            """)
 
-st.divider()
-st.subheader("📊 Progreso de Estudios")
-if not st.session_state.tareas.empty:
-    conteo_materias = st.session_state.tareas['Materia'].value_counts()
-    st.bar_chart(conteo_materias)
+            if st.button("🗑️ Eliminar", key=f"del_{t[0]}"):
+                eliminar_tarea(t[0])
+                st.rerun()
+
+    # =========================
+    # 📊 GRÁFICO POR MATERIA
+    # =========================
+    st.subheader("📊 Progreso por materia")
+
+    if tareas:
+
+        conteo_materia = {}
+
+        for t in tareas:
+            materia_t = t[2]
+            conteo_materia[materia_t] = conteo_materia.get(materia_t, 0) + 1
+
+        st.bar_chart(conteo_materia)
+
+    # =========================
+    # 📊 GRÁFICO POR PRIORIDAD
+    # =========================
+    st.subheader("📊 Distribución por prioridad")
+
+    if tareas:
+
+        prioridad_count = {
+            "🟥 Alta": 0,
+            "🟡 Media": 0,
+            "🟢 Baja": 0
+        }
+
+        for t in tareas:
+            prioridad_t = t[3]
+            if prioridad_t in prioridad_count:
+                prioridad_count[prioridad_t] += 1
+
+        st.bar_chart(prioridad_count)
+
+    # =========================
+    # LOGOUT
+    # =========================
+    if st.button("Cerrar sesión", key="logout_btn"):
+        st.session_state.user = None
+        st.rerun()
